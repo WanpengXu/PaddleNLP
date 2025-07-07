@@ -54,6 +54,7 @@ from ...transformers import (
     PretrainedTokenizer,
 )
 from ...transformers.model_utils import _add_variant
+from ...transformers.tokenizer_utils_base import PaddingStrategy
 from ...trl import llm_utils
 from ...utils.env import PADDLE_WEIGHTS_NAME
 from ..algos.advantage import (
@@ -1099,20 +1100,31 @@ class PPOTrainer(RLTrainerBase):
         return rl_loss
 
     def remove_pad_tokens_after_generate(self, generated_batches: List[DataProto]):
+        prompt_batches, response_batches = [], []
         cleanup_batches, indices, label_ids_batches = [], [], []
 
         for batch in generated_batches:
-            cleanup_batches.extend(
-                [
-                    process_row(
-                        row,
-                        remove_value=self.tokenizer.pad_token_id,
-                        remove_side="right",
-                        eos_token_id=self.tokenizer.eos_token_id,
-                    )
-                    for row in batch.batch["input_ids"]
-                ]
-            )
+            input_ids_list = batch.batch["input_ids"]   # leftpad + prompt + response + rightpad
+            prompt_list = batch.batch["prompt"]         # leftpad + prompt
+            for i, input_ids in enumerate(input_ids_list):
+                prompt_len = len(prompt_list[i])
+                prompt_part = input_ids[:prompt_len]    # leftpad + prompt
+                response_part = input_ids[prompt_len:]  # response + rightpad
+                pure_prompt_part = process_row(         # prompt
+                    prompt_part,
+                    remove_value=self.tokenizer.pad_token_id,
+                    remove_side="left",
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+                pure_response_part = process_row(       # response
+                    response_part,
+                    remove_value=self.tokenizer.pad_token_id,
+                    remove_side="right",
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+                prompt_batches.append(pure_prompt_part)
+                response_batches.append(pure_response_part)
+                cleanup_batches.append(paddle.concat([prompt_part, pure_response_part]))
             if self.args.use_rm_server:
                 label_ids_batches.extend(
                     [
@@ -1127,7 +1139,7 @@ class PPOTrainer(RLTrainerBase):
                 )
             indices.append(batch.non_tensor_batch["index"])
 
-        return cleanup_batches, indices, label_ids_batches
+        return cleanup_batches, indices, label_ids_batches, prompt_batches, response_batches
 
     def truncate_batch_data(self, batch, truncate_max_len):
         if len(batch) > truncate_max_len:
@@ -1358,6 +1370,7 @@ class PPOTrainer(RLTrainerBase):
                 expand_prompt = prompt_only_batch_expand.batch["input_ids"]
                 per_device_rollout_batch_size = self.args.per_device_rollout_batch_size
                 cleanup_batches, indices, label_ids_batches = [], [], []
+                prompt_batches, response_batches = [], []
 
                 timer_scope_actor_model = TimerScope(
                     self.timers,
@@ -1380,10 +1393,12 @@ class PPOTrainer(RLTrainerBase):
                             )
                             # NOTE(drownfish19): do process for each micro_batch, prepare for split mode
                             micro_ret = self.remove_pad_tokens_after_generate(generated_batches)
-                            micro_cleanup_batches, micro_indices, micro_label_ids_batches = micro_ret
-                            cleanup_batches.extend(micro_cleanup_batches)
-                            indices.extend(micro_indices)
-                            label_ids_batches.extend(micro_label_ids_batches)
+                            micro_cleanup_batches, micro_indices, micro_label_ids_batches, micro_prompt_batches, micro_response_batches = micro_ret
+                            cleanup_batches.extend(micro_cleanup_batches)       # leftpad + prompt + response，这个后面用不上了
+                            indices.extend(micro_indices)                       # uuid
+                            label_ids_batches.extend(micro_label_ids_batches)   # label
+                            prompt_batches.extend(micro_prompt_batches)         # prompt
+                            response_batches.extend(micro_response_batches)     # response
                         indices = np.concatenate(indices)
                     self.timers and (dist.get_world_size() > 1) and dist.barrier()
                     timer_scope_rollout.stop()
@@ -1392,32 +1407,71 @@ class PPOTrainer(RLTrainerBase):
                     self.reshard_controller.set_train_env("[after rollout]")
 
                 # step 2-1: truncate data
-                truncate_input_ids = [
-                    self.truncate_batch_data(batch, truncate_max_len=self._model_config.max_position_embeddings)
-                    for batch in cleanup_batches
-                ]
-                input_ids_len = paddle.to_tensor([len(item) for item in truncate_input_ids])
+                # left pad + prompt + response (truncate_max_len)
+                # truncate_input_ids = [
+                #     self.truncate_batch_data(batch, truncate_max_len=self._model_config.max_position_embeddings)
+                #     for batch in cleanup_batches
+                # ]
+                # input_ids_len = paddle.to_tensor([len(item) for item in truncate_input_ids])
 
                 # padding data
                 pad_to_multiple_of = self.args.tensor_parallel_degree if self._model_config.sequence_parallel else None
-                input_ids = self.tokenizer.pad(
-                    {"input_ids": truncate_input_ids},
-                    padding="longest",
-                    padding_side="right",
-                    max_length=None,
-                    return_attention_mask=False,
-                    pad_to_multiple_of=pad_to_multiple_of,
-                )["input_ids"]
+                # 多种 pad 策略支持
+                # 1. 对 prompt 做 pad
+                if args.prompt_padding_strategy == "do_not_pad":
+                    padded_prompts = prompt_batches     # PaddingStrategy.DO_NOT_PAD
+                elif args.prompt_padding_strategy == "left":
+                    padded_prompts = self.tokenizer.pad(
+                        {"input_ids": prompt_batches},
+                        padding=PaddingStrategy.MAX_LENGTH,
+                        max_length=args.max_prompt_len,
+                        padding_side="left",
+                        return_attention_mask=False,
+                        pad_to_multiple_of=pad_to_multiple_of,
+                    )["input_ids"]
+                # 2. 对 response 做 pad
+                if args.response_padding_strategy == "right":
+                    padded_responses = self.tokenizer.pad(
+                        {"input_ids": response_batches},
+                        padding=PaddingStrategy.MAX_LENGTH, 
+                        max_length=self._model_config.max_position_embeddings - args.max_prompt_len,  # 剩余长度 = 模型支持最大长度-prompt最大长度
+                        padding_side="right",
+                        return_attention_mask=False,
+                        pad_to_multiple_of=pad_to_multiple_of,
+                    )["input_ids"]
+                elif args.response_padding_strategy == "longest":
+                    padded_responses = self.tokenizer.pad(
+                        {"input_ids": response_batches},
+                        padding=PaddingStrategy.LONGEST,
+                        padding_side="right",
+                        return_attention_mask=False,
+                        pad_to_multiple_of=pad_to_multiple_of,
+                    )["input_ids"]
+                # 3. 拼接 prompt 和 response
+                input_ids = paddle.stack([paddle.concat([prompt, response]) for prompt, response in zip(padded_prompts, padded_responses)])
+
+                # input_ids2 = self.tokenizer.pad(
+                #     {"input_ids": truncate_input_ids},
+                #     padding="longest",
+                #     padding_side="right",
+                #     max_length=None,
+                #     return_attention_mask=False,
+                #     pad_to_multiple_of=pad_to_multiple_of,
+                # )["input_ids"]
                 label_ids = DataProto.pad_batch_data(label_ids_batches, pad_token_id=pad_token_id)
                 position_ids = make_position_ids_from_input_ids(input_ids, pad_token_id=pad_token_id)
 
-                prompt_len = paddle.full(shape=[expand_prompt.shape[0]], fill_value=expand_prompt.shape[1], dtype=expand_prompt.dtype)  # fmt: skip
-                prompt_len_without_pad = prompt_only_batch_expand.batch["raw_prompt_len_expand"]
-                response_len_without_pad = input_ids_len - prompt_len
+                prompt_len = paddle.full(shape=[padded_prompts.shape[0]], fill_value=padded_prompts.shape[1], dtype=padded_prompts.dtype)
+                prompt_len_without_pad = paddle.to_tensor([len(p) for p in prompt_batches], dtype="int64")
+                response_len_without_pad = paddle.to_tensor([len(r) for r in response_batches], dtype="int64")
+
+                # prompt_len2 = paddle.full(shape=[expand_prompt.shape[0]], fill_value=expand_prompt.shape[1], dtype=expand_prompt.dtype)  # fmt: skip
+                # prompt_len_without_pad2 = prompt_only_batch_expand.batch["raw_prompt_len_expand"]
+                # response_len_without_pad2 = input_ids_len - prompt_len
 
                 batch = DataProto.from_single_dict(
                     {
-                        "prompt": expand_prompt,
+                        "prompt": padded_prompts,
                         "input_ids": input_ids,
                         "position_ids": position_ids,
                         "prompt_len": prompt_len,

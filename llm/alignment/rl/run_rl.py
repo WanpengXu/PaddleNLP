@@ -305,6 +305,10 @@ def main():
     # pre-precess args
     model_args, data_args, training_args = process_args(model_args, data_args, training_args)
 
+    training_args.prompt_padding_strategy = "left"
+    training_args.response_padding_strategy = "longest"
+    training_args.max_prompt_len = data_args.max_prompt_len
+
     # Detecting last checkpoint.
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
