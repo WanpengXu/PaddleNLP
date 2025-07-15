@@ -15,6 +15,13 @@ import paddle.distributed.fleet as fleet
 import paddle.distributed as dist
 from paddle.distributed.fleet import DistributedStrategy
 from paddlenlp.utils.log import logger
+from paddlenlp.rl.trainer.factory import (
+    create_actor_models, 
+    create_actor_trainer,
+    create_reference_models,
+    create_reward_models,
+    create_reward_trainer
+)
 
 
 class BaseDistributedRayActor:
@@ -143,22 +150,6 @@ class BaseModelRayActor(BaseDistributedRayActor):
             results.append(result)
 
         return results
-
-@ray.remote(num_gpus=1)
-class ReferenceModelRayActor(BaseModelRayActor):
-    def init_model_from_pretrained(self, strategy_config: dict, pretrain):
-       self._setup_distributed(strategy_config)
-
-    def forward(self):
-        pass
-
-@ray.remote(num_gpus=1)
-class RewardModelRayActor(BaseModelRayActor):
-    def init_model_from_pretrained(self, strategy: DistributedStrategy, pretrain):
-        pass
-
-    def forward(self):
-        pass
 
 class RayActorGroup:
     """

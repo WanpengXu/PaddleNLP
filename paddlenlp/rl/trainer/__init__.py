@@ -17,3 +17,4 @@ from .actor_trainer import *
 from .critic_trainer import *
 from .rl_trainer import *
 from .trainer_utils import *
+from .factory import *
