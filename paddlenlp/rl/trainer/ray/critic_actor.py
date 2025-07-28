@@ -16,15 +16,8 @@ class CriticModelRayActor(BaseModelRayActor):
             **trainer_args,  # 这里可以传入如 criterion, args, data_collator, train_dataset, eval_dataset 等
         )
 
-    def fit(self, *args, **kwargs):
-        # 训练入口，直接调用 Trainer 的训练方法
-        return self.trainer.fit(*args, **kwargs)
+    def compute_value(self, *args, **kwargs):
+        return self.trainer.compute_value(*args, **kwargs)
 
-    def save_model(self, *args, **kwargs):
-        return self.trainer.save_model(*args, **kwargs)
-
-    def forward(self, *args, **kwargs):
-        # 推理/评估等功能
-        return self.trainer.forward(*args, **kwargs)
-
-    # 你可以根据需要添加更多方法，比如 evaluate、reload_states 等
+    def update_critic(self, *args, **kwargs):
+        return self.trainer.update_critic(*args, **kwargs)

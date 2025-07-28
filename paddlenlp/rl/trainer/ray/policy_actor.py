@@ -15,17 +15,9 @@ class PolicyModelRayActor(BaseModelRayActor):
             tokenizer=self.tokenizer,
             **trainer_args,  # 这里可以传入如 criterion, args, data_collator, train_dataset, eval_dataset 等
         )
-
-    def fit(self, *args, **kwargs):
-        # 训练入口，直接调用 Trainer 的训练方法
-        return self.trainer.fit(*args, **kwargs)
-
-    def save_model(self, *args, **kwargs):
-        return self.trainer.save_model(*args, **kwargs)
-
-    def generate_sequences(self, *args, **kwargs):
-        # 生成序列，直接调用 Trainer 的 generate_sequences
-        return self.trainer.generate_sequences(*args, **kwargs)
     
     def compute_logprob(self, *args, **kwargs):
         return self.trainer.compute_logprob(*args, **kwargs)
+    
+    def generate_sequences(self, *args, **kwargs):
+        return self.trainer.generate_sequences(*args, **kwargs)

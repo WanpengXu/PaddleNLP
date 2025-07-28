@@ -28,10 +28,10 @@ class RewardModelRayActor(BaseModelRayActor):
             **trainer_args,
         )
     
-    def tensor_dict_to_numpy(self, d):
-        return {k: (v.numpy() if hasattr(v, "numpy") else v) for k, v in d.items()}
-
     def compute_reward(self, batch, *args, **kwargs):
         # 如果 Trainer 有 compute_reward 方法
         result = self.trainer.compute_reward(batch=batch, input_ids_tokenizer=self.tokenizer, *args, **kwargs)
         return result.numpy()
+    
+    def request_reward_server(self, *args, **kwargs):
+        return self.trainer.request_reward_server(*args, **kwargs)
