@@ -61,6 +61,43 @@ from paddlenlp.rl.trainer.trainer_utils import (
     process_row,
 )
 
+def get_scheduler(args):
+    """
+    Get the learning rate scheduler, return None if the minimum learning rate is not set.
+    Supports two types of learning rate schedulers: "cosine" and "linear".
+
+    Args:
+        args (argparse.Namespace): Command-line arguments containing parameters related to the learning rate.
+
+    Returns:
+        paddle.optimizer.lr.LRScheduler or None, optional: The learning rate scheduler or None, default is None.
+    """
+    if args.decay_steps is None:
+        args.decay_steps = args.max_steps
+    if args.warmup_steps > 0:
+        warmup_steps = args.warmup_steps
+    else:
+        warmup_steps = args.warmup_ratio * args.max_steps
+    lr_scheduler = None
+    if args.min_learning_rate is not None:
+        if args.lr_scheduler_type == "cosine":
+            lr_scheduler = CosineAnnealingWithWarmupDecay(
+                max_lr=args.learning_rate,
+                min_lr=args.min_learning_rate,
+                warmup_step=warmup_steps,
+                decay_step=args.decay_steps,
+                last_epoch=0,
+            )
+        elif args.lr_scheduler_type == "linear":
+            lr_scheduler = LinearAnnealingWithWarmupDecay(
+                max_lr=args.learning_rate,
+                min_lr=args.min_learning_rate,
+                warmup_step=warmup_steps,
+                decay_step=args.decay_steps,
+                last_epoch=0,
+            )
+    return lr_scheduler
+
 def create_actor_models(
     model_args: ModelArgument,
     data_args: DataArgument,
@@ -113,7 +150,6 @@ def create_actor_models(
 
 
 def create_actor_trainer(
-    self,
     model: Union[PretrainedModel, nn.Layer] = None,
     model_eval: Union[PretrainedModel, nn.Layer] = None,
     criterion: nn.Layer = None,
@@ -129,7 +165,7 @@ def create_actor_trainer(
     reshard_controller: Optional[ReshardController] = None,
 ):
     policy_training_args = copy.deepcopy(args)
-    lr_scheduler = self.get_scheduler(policy_training_args)
+    lr_scheduler = get_scheduler(policy_training_args)
     actor_trainer = ActorReferenceTrainer(
         model,
         criterion,
@@ -145,7 +181,7 @@ def create_actor_trainer(
         reshard_controller,
     )
     actor_trainer.set_eval_model(model_eval)
-    actor_trainer.timers = self.timers
+    # actor_trainer.timers = self.timers
 
     actor_trainer.add_callback(MuteDefaultFlowCallback)
     if not args.disable_tqdm:
@@ -166,7 +202,6 @@ def create_reference_models(
     return create_actor_models(model_args, data_args, training_args, common_config, reshard_controller)
 
 def create_reference_trainer(
-    self,
     model: Union[PretrainedModel, nn.Layer] = None,
     criterion: nn.Layer = None,
     args: TrainingArguments = None,
@@ -205,7 +240,7 @@ def create_reference_trainer(
         if args.pipeline_parallel_degree > 1 or ShardingOption.FULL_SHARD in args.sharding:
             reference_trainer.init_train_model_opt(100, None, clear_master_weight=True)  # dummy max_steps
 
-    reference_trainer.timers = self.timers
+    # reference_trainer.timers = self.timers
 
     return reference_trainer
 
@@ -266,7 +301,6 @@ def create_reward_models(
     return reward_model, reward_tokenizer
 
 def create_reward_trainer(
-    self,
     model: Union[PretrainedModel, nn.Layer, str] = None,
     criterion: nn.Layer = None,
     args: TrainingArguments = None,
@@ -304,11 +338,11 @@ def create_reward_trainer(
             reward_server=model,
         )
 
-        if not self.args.use_rm_server:
+        if not args.use_rm_server:
             if args.pipeline_parallel_degree > 1 or ShardingOption.FULL_SHARD in args.sharding:
                 reward_trainer.init_train_model_opt(100, None, clear_master_weight=True)  # dummy max_steps
 
-    reward_trainer.timers = self.timers
+    # reward_trainer.timers = self.timers
 
     return reward_trainer
 
@@ -376,7 +410,6 @@ def create_critic_models(
     return critic_model, critic_eval_model, critic_tokenizer
 
 def create_critic_trainer(
-    self,
     model: Union[PretrainedModel, nn.Layer] = None,
     model_eval: Union[PretrainedModel, nn.Layer] = None,
     criterion: nn.Layer = None,
@@ -404,7 +437,7 @@ def create_critic_trainer(
                 attr_name[len("critic_") :],
                 getattr(value_training_args, attr_name),
             )
-    lr_scheduler = self.get_scheduler(value_training_args)
+    lr_scheduler = get_scheduler(value_training_args)
     critic_trainer = CriticTrainer(
         model,
         criterion,
@@ -420,7 +453,7 @@ def create_critic_trainer(
     )
 
     critic_trainer.set_eval_model(model_eval)
-    critic_trainer.timers = self.timers
+    # critic_trainer.timers = self.timers
 
     critic_trainer.add_callback(MuteDefaultFlowCallback)
     if not args.disable_tqdm:

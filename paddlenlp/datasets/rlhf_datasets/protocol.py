@@ -67,8 +67,23 @@ class TensorDict:
         else:
             raise KeyError(f"Unsupported key type: {type(key)}")
 
+    def __getstate__(self):
+        return {k: (v.numpy() if hasattr(v, "numpy") else v) for k, v in self.items()}
+
+    def __setstate__(self, state):
+        self.clear()
+        for k, v in state.items():
+            if isinstance(v, np.ndarray):
+                self[k] = paddle.to_tensor(v)
+            else:
+                self[k] = v
+
     def __contains__(self, key):
         return key in self._tensors
+    
+    def clear(self):
+        """清空所有张量"""
+        self._tensors.clear()
 
     def update(self, other):
         """Updates the tensor dictionary of the current object.
@@ -534,6 +549,27 @@ class DataProto:
         # Case 4: Unsupported type
         else:
             raise TypeError(f"Indexing with {type(item)} is not supported")
+    
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['batch'] = self.batch.__getstate__()
+        # 递归处理 non_tensor_batch
+        state['non_tensor_batch'] = {
+            k: (v.numpy() if hasattr(v, "numpy") else v) for k, v in getattr(self, 'non_tensor_batch', {}).items()
+        }
+        return state
+
+    def __setstate__(self, state):
+        import paddle
+        batch_dict = state['batch']
+        td = TensorDict({})
+        td.__setstate__(batch_dict)
+        state['batch'] = td
+        # 递归还原 non_tensor_batch
+        state['non_tensor_batch'] = {
+            k: paddle.to_tensor(v) if isinstance(v, np.ndarray) else v for k, v in state.get('non_tensor_batch', {}).items()
+        }
+        self.__dict__.update(state)
 
     def print_size(self, prefix=""):
         """Prints the sizes of `tensordict` and `non_tensor_batch`.

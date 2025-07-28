@@ -16,9 +16,8 @@ class ReferenceModelRayActor(BaseModelRayActor):
             **trainer_args,
         )
 
-    def forward(self, *args, **kwargs):
-        # 只暴露推理相关接口
-        return self.trainer.forward(*args, **kwargs)
+    def compute_logprob(self, *args, **kwargs):
+        return self.trainer.compute_logprob(*args, **kwargs)
 
     def generate_sequences(self, *args, **kwargs):
         return self.trainer.generate_sequences(*args, **kwargs)
